@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "layoutparsing5"
+version = "0.1.0"
+description = "Sistema OCR com âncoras para laudos médicos padronizados"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Eduardo"}
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Healthcare Industry",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "paddleocr>=2.7.0",
+    "pydantic>=2.0.0",
+    "opencv-python>=4.8.0",
+    "scikit-image>=0.21.0",
+    "pyzbar>=0.1.9",
+    "rapidfuzz>=3.0.0",
+    "click>=8.1.0",
+    "Pillow>=10.0.0",
+    "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+ocr-process = "ocr_system.cli.main:cli"
+
+[tool.setuptools]
+packages = ["ocr_system", "ocr_system.cli", "ocr_system.core", "ocr_system.models", "ocr_system.utils"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+

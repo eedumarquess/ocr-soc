@@ -1,0 +1,126 @@
+---
+alwaysApply: true
+---
+
+🧠 PaddleOCR Medical Reports — Cursor Rules
+Core Philosophy
+Expert system for medical text extraction from scanned reports. Prioritize accuracy, determinism, and confidentiality.
+
+🎯 Principles
+
+Functional-first: Pure functions, avoid classes
+RORO pattern: Receive Object, Return Object
+Deterministic: Same input → same output
+Modular: preprocess → extract → postprocess → validate
+Type-safe: Strict typing + Pydantic v2
+Guard clauses: Validate early, fail fast
+
+📦 Structure
+ocr/
+├── pipelines/
+│   ├── preprocess_image.py
+│   ├── extract_text.py
+│   ├── postprocess_text.py
+│   └── validate_output.py
+├── models/ocr_result.py
+├── utils/
+│   ├── image_io.py
+│   └── medical_rules.py
+└── tests/test_*.py
+
+🔧 Implementation
+PaddleOCR Setup
+pythonfrom paddleocr import PaddleOCR
+
+ocr = PaddleOCR(
+    use_angle_cls=True,
+    lang="por",
+    det_db_unclip_ratio=1.6,
+    use_gpu=True,
+    show_log=False
+)
+Data Model
+pythonfrom pydantic import BaseModel, Field
+
+class OCRResult(BaseModel):
+    text: str
+    confidence: float | None = None
+    bounding_boxes: list[tuple[int, int, int, int]] | None = None
+    page_number: int = Field(default=1, ge=1)
+    metadata: dict = Field(default_factory=dict)
+Post-Processing
+pythondef postprocess_text(result: OCRResult) -> OCRResult:
+    if not result.text:
+        return result
+    
+    text = result.text.strip()
+    text = text.replace('|', '').replace('—', '-')
+    text = ' '.join(text.split())
+    text = normalize_medical_terms(text)
+    
+    return result.model_copy(update={'text': text})
+
+🩺 Medical Domain
+Text Normalization
+
+Strip artifacts: |, _, —
+Normalize decimals: , → .
+Medical spelling corrections
+Preserve original line order
+
+Key-Value Extraction
+pythonimport re
+
+pattern = r"([\w\s]+):\s*([\d.,]+)\s*(g/dL|mg/dL|mmol/L)"
+matches = re.findall(pattern, text)
+Utilities
+python# utils/medical_rules.py
+MEDICAL_TERMS = {
+    "hemoglohina": "hemoglobina",
+    "glocose": "glicose",
+    "creatnina": "creatinina",
+}
+
+def normalize_medical_terms(text: str) -> str:
+    for wrong, correct in MEDICAL_TERMS.items():
+        text = text.replace(wrong, correct)
+    return text
+
+⚡ Performance
+
+GPU: Enable for PaddleOCR
+Caching: Use @lru_cache for normalizations
+Batching: asyncio.gather() for multiple reports
+Memory: Use BytesIO vs temp files
+Vectorization: NumPy for image ops
+
+
+🧪 Testing
+pythonimport pytest
+from unittest.mock import Mock
+
+def test_postprocess_removes_artifacts():
+    result = OCRResult(text="Test | text")
+    processed = postprocess_text(result)
+    assert '|' not in processed.text
+
+🛡️ Error Handling
+pythonclass InvalidImageError(Exception): pass
+class OCRExtractionError(Exception): pass
+
+def validate_image(img: np.ndarray) -> None:
+    if img is None or img.size == 0:
+        raise InvalidImageError("Empty image")
+
+📝 Conventions
+CategoryRuleStyleFunctional, typed, declarativeI/OPydantic models onlyErrorsGuard clauses, early returnsLogsStructured JSON, mask PIITestsPytest, mocked OCR outputs
+
+✅ Checklist
+
+ All functions type-hinted
+ Pydantic validation on I/O
+ Medical terms normalized
+ No PII in logs
+ Tests with sample images
+ GPU enabled if available
+ Error handling on all image ops

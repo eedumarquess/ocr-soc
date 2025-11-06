@@ -1,0 +1,26 @@
+{
+  "layout_id": "page1_qr_test",
+  "image_path": "docs\\page1.jpg",
+  "anchor_detected": false,
+  "anchor_type": "degraded",
+  "anchor_position": [
+    0,
+    0
+  ],
+  "anchor_confidence": 0.0,
+  "fields": [],
+  "processing_metadata": {
+    "preprocessing": {
+      "deskew_angle": 0.9999923706054688,
+      "final_shape": [
+        3507,
+        2480
+      ]
+    },
+    "degraded_mode": true,
+    "anchor_metadata": {}
+  },
+  "errors": [
+    "Âncora não detectada: Nenhuma âncora detectada. Tentadas: qrcode + 2 fallbacks"
+  ]
+}
