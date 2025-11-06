@@ -1,6 +1,7 @@
 """Processador principal que orquestra todo o pipeline."""
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,12 +11,17 @@ from ocr_system.core.anchor_detector import detect_anchor_with_fallback
 from ocr_system.core.ocr_engine import initialize_ocr
 from ocr_system.core.preprocessing import preprocess_pipeline
 from ocr_system.core.roi_extractor import extract_all_rois
+from ocr_system.models.anchor import QRCodeAnchorConfig
 from ocr_system.models.layout import LayoutConfig
 from ocr_system.models.result import FieldResult, OCRResult
 from ocr_system.utils.exceptions import AnchorNotFoundError
+from ocr_system.utils.geometry import calculate_expected_qr_size
 from ocr_system.utils.image_io import load_image
 from ocr_system.utils.medical_rules import normalize_medical_text
+from ocr_system.utils.qr_cache import set_cached_qr_size
 from ocr_system.utils.visualization import save_roi_visualization
+
+logger = logging.getLogger(__name__)
 
 
 def load_layout(layout_id: str, layouts_dir: Path | None = None) -> LayoutConfig:
@@ -170,11 +176,122 @@ def process_document(
         anchor_type = "degraded"
         processing_metadata["degraded_mode"] = True
 
+    # Calcula fator de escala baseado no tamanho do QR code detectado usando sistema híbrido
+    scale_factor: float | tuple[float, float] = 1.0
+    scaling_strategy = "none"
+    
+    if anchor_type == "qrcode" and anchor_metadata:
+        # Verifica se temos tamanho do QR code detectado
+        qr_width = anchor_metadata.get("qr_width")
+        qr_height = anchor_metadata.get("qr_height")
+        
+        # Verifica se temos configuração de QR code na primary anchor
+        if isinstance(layout.anchor.primary, QRCodeAnchorConfig):
+            primary_config = layout.anchor.primary
+            
+            try:
+                # Obtém tamanho esperado usando sistema híbrido
+                expected_size = calculate_expected_qr_size(
+                    processed_image, primary_config, layout.layout_id
+                )
+                
+                if expected_size is not None:
+                    expected_width, expected_height = expected_size
+                    if qr_width and qr_height and expected_width > 0 and expected_height > 0:
+                        # Calcula escalas separadas para X e Y (mais preciso que média)
+                        # Usa divisão de ponto flutuante com alta precisão
+                        scale_x = float(qr_width) / float(expected_width)
+                        scale_y = float(qr_height) / float(expected_height)
+                        # Arredonda para 6 casas decimais para manter precisão
+                        scale_x = round(scale_x, 6)
+                        scale_y = round(scale_y, 6)
+                        scale_factor = (scale_x, scale_y)
+                        
+                        # Determina qual estratégia foi usada
+                        if primary_config.expected_qr_width_ratio is not None and primary_config.expected_qr_height_ratio is not None:
+                            scaling_strategy = "relative_ratios"
+                        elif primary_config.expected_qr_size is not None:
+                            scaling_strategy = "fixed_size"
+                        else:
+                            scaling_strategy = "cache"
+                        
+                        # Armazena ambos os fatores para compatibilidade
+                        scale_avg = (scale_x + scale_y) / 2.0
+                        processing_metadata["scale_factor"] = scale_avg
+                        processing_metadata["scale_factor_x"] = scale_x
+                        processing_metadata["scale_factor_y"] = scale_y
+                        processing_metadata["qr_detected_size"] = (qr_width, qr_height)
+                        processing_metadata["qr_expected_size"] = (expected_width, expected_height)
+                        processing_metadata["scaling_strategy"] = scaling_strategy
+                        
+                        logger.info(
+                            f"Escala calculada usando estratégia '{scaling_strategy}': "
+                            f"detectado=({qr_width}, {qr_height}), "
+                            f"esperado=({expected_width}, {expected_height}), "
+                            f"fator_x={scale_x:.3f}, fator_y={scale_y:.3f}, média={scale_avg:.3f}"
+                        )
+                    else:
+                        logger.warning(
+                            f"Tamanhos inválidos para cálculo de escala: "
+                            f"detectado=({qr_width}, {qr_height}), "
+                            f"esperado=({expected_width}, {expected_height})"
+                        )
+                else:
+                    # Auto-referência: usar QR detectado como referência (escala 1.0)
+                    scaling_strategy = "auto_reference"
+                    if qr_width and qr_height:
+                        # Salva no cache para próximos documentos
+                        try:
+                            set_cached_qr_size(layout.layout_id, qr_width, qr_height)
+                            logger.info(
+                                f"QR code usado como referência (escala 1.0) e salvo no cache: "
+                                f"({qr_width}, {qr_height})"
+                            )
+                        except ValueError as e:
+                            logger.warning(f"Erro ao salvar no cache: {e}")
+                    
+                    processing_metadata["scaling_strategy"] = scaling_strategy
+                    processing_metadata["qr_detected_size"] = (qr_width, qr_height)
+                    logger.info(
+                        f"Nenhuma referência disponível, usando QR detectado como referência "
+                        f"(escala 1.0): ({qr_width}, {qr_height})"
+                    )
+            except Exception as e:
+                logger.error(f"Erro ao calcular tamanho esperado do QR code: {e}", exc_info=True)
+                # Fallback para escala 1.0
+                scale_factor = 1.0
+                scaling_strategy = "error_fallback"
+                processing_metadata["scaling_strategy"] = scaling_strategy
+                processing_metadata["scaling_error"] = str(e)
+        else:
+            # Se QR code foi detectado mas não há configuração, salva no cache
+            if qr_width and qr_height:
+                try:
+                    set_cached_qr_size(layout.layout_id, qr_width, qr_height)
+                    logger.info(
+                        f"QR code detectado sem configuração, salvo no cache: ({qr_width}, {qr_height})"
+                    )
+                except ValueError as e:
+                    logger.warning(f"Erro ao salvar no cache: {e}")
+    
+    # Se QR code foi detectado mas não foi processado acima, atualiza cache
+    if anchor_type == "qrcode" and anchor_metadata and scaling_strategy == "none":
+        qr_width = anchor_metadata.get("qr_width")
+        qr_height = anchor_metadata.get("qr_height")
+        if qr_width and qr_height:
+            try:
+                set_cached_qr_size(layout.layout_id, qr_width, qr_height)
+                logger.debug(f"QR code salvo no cache: ({qr_width}, {qr_height})")
+            except ValueError:
+                pass  # Ignora erros silenciosamente neste caso
+    
     # Extrai ROIs
     fields: list[Any] = []
     try:
         if anchor_position:
-            fields = extract_all_rois(processed_image, anchor_position, layout, ocr_instance)
+            fields = extract_all_rois(
+                processed_image, anchor_position, layout, ocr_instance, scale_factor
+            )
     except Exception as e:
         errors.append(f"Erro ao extrair ROIs: {str(e)}")
 

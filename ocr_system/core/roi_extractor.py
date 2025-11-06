@@ -11,7 +11,7 @@ from ocr_system.models.layout import LayoutConfig
 from ocr_system.models.result import FieldResult
 from ocr_system.models.roi import ROIConfig
 from ocr_system.utils.exceptions import ValidationError
-from ocr_system.utils.geometry import calculate_absolute_roi, crop_roi, is_roi_valid
+from ocr_system.utils.geometry import calculate_absolute_roi, calculate_scaled_roi, crop_roi, is_roi_valid
 from ocr_system.utils.image_io import get_image_shape, validate_image
 from ocr_system.utils.medical_rules import normalize_medical_text, remove_label_from_text
 
@@ -60,6 +60,7 @@ def extract_roi_field(
     anchor_position: tuple[int, int],
     roi_config: ROIConfig,
     ocr_instance: Any = None,
+    scale_factor: float | tuple[float, float] = 1.0,
 ) -> FieldResult:
     """
     Extrai e valida um campo de um ROI.
@@ -69,6 +70,7 @@ def extract_roi_field(
         anchor_position: Posição da âncora (x, y)
         roi_config: Configuração do ROI
         ocr_instance: Instância do OCR (opcional)
+        scale_factor: Fator de escala único (float) ou tupla (scale_x, scale_y) para escalas separadas
 
     Returns:
         Resultado da extração do campo
@@ -76,9 +78,18 @@ def extract_roi_field(
     validate_image(image)
     image_shape = get_image_shape(image)
 
+    # Aplica escala se necessário
+    if scale_factor != 1.0:
+        scaled_position, scaled_size = calculate_scaled_roi(
+            roi_config.relative_position, roi_config.size, scale_factor
+        )
+    else:
+        scaled_position = roi_config.relative_position
+        scaled_size = roi_config.size
+
     # Calcula ROI absoluto
     absolute_roi = calculate_absolute_roi(
-        anchor_position, roi_config.relative_position, roi_config.size, image_shape
+        anchor_position, scaled_position, scaled_size, image_shape
     )
 
     # Valida ROI
@@ -162,6 +173,7 @@ def extract_all_rois(
     anchor_position: tuple[int, int],
     layout: LayoutConfig,
     ocr_instance: Any = None,
+    scale_factor: float | tuple[float, float] = 1.0,
 ) -> list[FieldResult]:
     """
     Extrai todos os ROIs do layout.
@@ -171,6 +183,7 @@ def extract_all_rois(
         anchor_position: Posição da âncora (x, y)
         layout: Configuração do layout
         ocr_instance: Instância do OCR (opcional)
+        scale_factor: Fator de escala único (float) ou tupla (scale_x, scale_y) para escalas separadas
 
     Returns:
         Lista de resultados dos campos
@@ -183,7 +196,9 @@ def extract_all_rois(
     results = []
 
     for roi_config in layout.rois:
-        field_result = extract_roi_field(image, anchor_position, roi_config, ocr_instance)
+        field_result = extract_roi_field(
+            image, anchor_position, roi_config, ocr_instance, scale_factor
+        )
         results.append(field_result)
 
     return results

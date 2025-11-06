@@ -11,7 +11,7 @@ class PreprocessingConfig(BaseModel):
     """Configuração do pipeline de pré-processamento."""
 
     deskew: bool = Field(default=True, description="Aplicar correção de rotação")
-    deskew_threshold: float = Field(default=0.5, description="Graus mínimos para corrigir")
+    deskew_threshold: float = Field(default=0.1, description="Graus mínimos para corrigir")
     binarization: Literal["otsu", "adaptive", "none"] = Field(
         default="adaptive", description="Tipo de binarização"
     )

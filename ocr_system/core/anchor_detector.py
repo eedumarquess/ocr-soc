@@ -116,9 +116,12 @@ def detect_qrcode(
                     if not re.match(config.expected_content_pattern, content):
                         continue
 
-                # Calcula posição absoluta (centro do QR)
-                center_x = offset_x + rect.left + rect.width // 2
-                center_y = offset_y + rect.top + rect.height // 2
+                # Calcula posição absoluta (centro do QR) com precisão melhorada
+                # Usa cálculo mais preciso do centro para evitar erros de arredondamento
+                center_x = offset_x + rect.left + (rect.width / 2.0)
+                center_y = offset_y + rect.top + (rect.height / 2.0)
+                center_x = int(round(center_x))
+                center_y = int(round(center_y))
 
                 # Confiança padrão (pyzbar não retorna confiança, usa 1.0 se encontrado)
                 confidence = float(1.0)
@@ -126,6 +129,8 @@ def detect_qrcode(
                 metadata = {
                     "content": content,
                     "rect": (int(rect.left), int(rect.top), int(rect.width), int(rect.height)),
+                    "qr_width": int(rect.width),
+                    "qr_height": int(rect.height),
                     "type": "qrcode",
                     "preprocessing_variant": variant_name,
                 }

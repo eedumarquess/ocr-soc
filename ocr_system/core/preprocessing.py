@@ -13,55 +13,43 @@ from ocr_system.utils.exceptions import InvalidImageError
 from ocr_system.utils.image_io import validate_image, image_to_grayscale
 
 
-def deskew_image(image: np.ndarray, threshold: float = 0.5) -> tuple[np.ndarray, float]:
+def _deskew_hough_lines(image: np.ndarray) -> float | None:
     """
-    Corrige rotação da imagem (deskew) focando em linhas pretas horizontais.
-
-    Melhora a detecção de inclinação ao:
-    - Binarizar a imagem para focar em linhas pretas (texto)
-    - Usar morfologia para destacar linhas horizontais
-    - Aplicar HoughLinesP para detecção mais robusta
-    - Filtrar e ponderar linhas horizontais relevantes
-
-    Args:
-        image: Imagem em escala de cinza ou colorida
-        threshold: Graus mínimos para aplicar correção
-
-    Returns:
-        Tupla (imagem corrigida, ângulo detectado)
-    """
-    validate_image(image)
-    gray = image_to_grayscale(image) if len(image.shape) == 3 else image
-    h, w = gray.shape
-
-    # 1. Binarizar para focar em linhas pretas (texto/documento)
-    # Usa Otsu para melhor separação texto/fundo
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    Detecta ângulo de inclinação usando HoughLinesP.
     
-    # 2. Morfologia para destacar linhas horizontais
-    # Kernel horizontal longo para detectar linhas de texto
+    Args:
+        image: Imagem em escala de cinza
+        
+    Returns:
+        Ângulo detectado em graus ou None se não detectado
+    """
+    h, w = image.shape
+    
+    # Binarizar para focar em linhas pretas (texto/documento)
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Morfologia para destacar linhas horizontais
     horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (int(w * 0.3), 1))
     horizontal_lines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
     
-    # 3. Detectar bordas nas linhas horizontais
+    # Detectar bordas
     edges = cv2.Canny(horizontal_lines, 50, 150, apertureSize=3)
     
-    # 4. Usar HoughLinesP (probabilístico) - mais eficiente e preciso
-    # Parâmetros ajustados para detectar linhas horizontais longas
-    min_line_length = int(w * 0.2)  # Linha deve ter pelo menos 20% da largura
-    max_line_gap = int(h * 0.02)     # Gap máximo entre segmentos de linha
+    # HoughLinesP - ajustado para detectar linhas mais longas e melhorar precisão
+    min_line_length = int(w * 0.3)  # Aumentado para detectar linhas mais longas
+    max_line_gap = int(h * 0.01)  # Reduzido para linhas mais contínuas
     lines = cv2.HoughLinesP(
         edges,
         rho=1,
-        theta=np.pi / 180,
-        threshold=int(w * 0.15),  # Threshold adaptativo baseado na largura
+        theta=np.pi / 180,  # 1 grau de precisão
+        threshold=int(w * 0.1),  # Reduzido para detectar mais linhas
         minLineLength=min_line_length,
         maxLineGap=max_line_gap
     )
 
     if lines is None or len(lines) == 0:
-        # Fallback: tentar método alternativo com Canny direto
-        edges_fallback = cv2.Canny(gray, 50, 150, apertureSize=3)
+        # Fallback: tentar com Canny direto
+        edges_fallback = cv2.Canny(image, 50, 150, apertureSize=3)
         lines = cv2.HoughLinesP(
             edges_fallback,
             rho=1,
@@ -72,53 +60,62 @@ def deskew_image(image: np.ndarray, threshold: float = 0.5) -> tuple[np.ndarray,
         )
         
         if lines is None or len(lines) == 0:
-            return image, 0.0
+            return None
 
-    # 5. Calcular ângulos das linhas e filtrar horizontais
+    # Calcular ângulos das linhas
     angles = []
-    weights = []  # Peso baseado no comprimento da linha
+    weights = []
+    
+    # Zona de exclusão para linhas de erro de escaneamento (últimos 15% da largura)
+    exclude_zone_start = int(w * 0.85)
     
     for line in lines:
         x1, y1, x2, y2 = line[0]
         
-        # Calcular ângulo da linha
-        if abs(x2 - x1) < 1:  # Linha quase vertical, ignorar
+        if abs(x2 - x1) < 1:
             continue
+        
+        # FILTRO: Ignora linhas que estão na zona de erro de escaneamento
+        # Se a linha está na zona de exclusão, ignora completamente
+        line_center_x = (x1 + x2) / 2.0
+        if line_center_x > exclude_zone_start:
+            # Linha na zona de erro - ignora completamente
+            continue
+        
+        # FILTRO: Prefere linhas no centro da imagem (mais confiáveis)
+        center_weight = 1.0
+        distance_from_center = abs(line_center_x - (w / 2.0))
+        # Linhas mais próximas do centro têm peso maior
+        center_weight = 1.0 - (distance_from_center / (w / 2.0)) * 0.5
+        center_weight = max(0.5, center_weight)  # Mínimo 50% do peso
             
         angle_rad = np.arctan2(y2 - y1, x2 - x1)
         angle_deg = np.degrees(angle_rad)
         
-        # Focar em linhas quase horizontais (entre -30 e 30 graus)
-        if abs(angle_deg) > 30:
+        # Filtra apenas ângulos próximos de 0 (linhas horizontais)
+        # Aceita até 7 graus para capturar inclinações pequenas e médias
+        if abs(angle_deg) > 7.0:
             continue
         
-        # Comprimento da linha (peso)
         length = np.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
-        
+        # Aplica peso do centro ao comprimento
+        weighted_length = length * center_weight
         angles.append(angle_deg)
-        weights.append(length)
+        weights.append(weighted_length)
 
     if not angles:
-        return image, 0.0
+        return None
 
-    # 6. Calcular ângulo final usando média ponderada
-    # Linhas mais longas têm mais peso (são mais confiáveis)
+    # Filtrar outliers usando IQR (mais agressivo para remover linhas defeituosas)
     angles_array = np.array(angles)
     weights_array = np.array(weights)
     
-    # Normalizar pesos
-    if weights_array.sum() > 0:
-        weights_array = weights_array / weights_array.sum()
-        weighted_angle = np.average(angles_array, weights=weights_array)
-    else:
-        weighted_angle = np.median(angles_array)
-    
-    # 7. Filtrar outliers usando IQR (Interquartile Range)
     q1 = np.percentile(angles_array, 25)
     q3 = np.percentile(angles_array, 75)
     iqr = q3 - q1
-    lower_bound = q1 - 1.5 * iqr
-    upper_bound = q3 + 1.5 * iqr
+    # FILTRO MELHORADO: Usa 1.0 * IQR em vez de 1.5 para ser mais restritivo
+    lower_bound = q1 - 1.0 * iqr
+    upper_bound = q3 + 1.0 * iqr
     
     filtered_angles = [a for a, w in zip(angles, weights) 
                       if lower_bound <= a <= upper_bound]
@@ -131,17 +128,233 @@ def deskew_image(image: np.ndarray, threshold: float = 0.5) -> tuple[np.ndarray,
         
         if filtered_weights_array.sum() > 0:
             filtered_weights_array = filtered_weights_array / filtered_weights_array.sum()
-            final_angle = np.average(filtered_angles_array, weights=filtered_weights_array)
+            return float(np.average(filtered_angles_array, weights=filtered_weights_array))
         else:
-            final_angle = np.median(filtered_angles_array)
+            return float(np.median(filtered_angles_array))
+    
+    if weights_array.sum() > 0:
+        weights_array = weights_array / weights_array.sum()
+        return float(np.average(angles_array, weights=weights_array))
+    
+    return float(np.median(angles_array))
+
+
+def _deskew_projection_profile(image: np.ndarray, angle_range: tuple[float, float] = (-1.0, 1.0)) -> float | None:
+    """
+    Detecta ângulo de inclinação usando Projection Profile.
+    
+    O método testa diferentes ângulos e escolhe o que maximiza a variância
+    do perfil de projeção horizontal (mais linhas de texto bem definidas).
+    
+    Args:
+        image: Imagem em escala de cinza
+        angle_range: Range de ângulos para testar (min, max) em graus
+        
+    Returns:
+        Ângulo detectado em graus ou None se não detectado
+    """
+    h, w = image.shape
+    
+    # Binarizar
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # FILTRO: Remove zona de erro de escaneamento antes de testar
+    exclude_zone_start = int(w * 0.85)
+    # Cria máscara para ignorar a zona de erro
+    mask = np.ones(binary.shape, dtype=np.uint8) * 255
+    mask[:, exclude_zone_start:] = 0  # Zera a zona de erro
+    binary = cv2.bitwise_and(binary, mask)
+    
+    # Testar diferentes ângulos com maior precisão (0.05 graus para detectar 0.56°)
+    angles_to_test = np.arange(angle_range[0], angle_range[1] + 0.05, 0.05)
+    best_angle = 0.0
+    best_variance = 0.0
+    
+    center = (w // 2, h // 2)
+    
+    for angle in angles_to_test:
+        # Rotacionar imagem
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        cos = np.abs(rotation_matrix[0, 0])
+        sin = np.abs(rotation_matrix[0, 1])
+        new_w = int((h * sin) + (w * cos))
+        new_h = int((h * cos) + (w * sin))
+        rotation_matrix[0, 2] += (new_w / 2) - center[0]
+        rotation_matrix[1, 2] += (new_h / 2) - center[1]
+        
+        rotated = cv2.warpAffine(
+            binary, rotation_matrix, (new_w, new_h),
+            flags=cv2.INTER_CUBIC,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0
+        )
+        
+        # Calcular perfil de projeção horizontal (soma de pixels por linha)
+        projection = np.sum(rotated, axis=1)
+        
+        # Calcular variância (maior variância = linhas de texto mais definidas)
+        variance = float(np.var(projection))
+        
+        if variance > best_variance:
+            best_variance = variance
+            best_angle = angle
+    
+    # Só retorna se a variância for significativa
+    if best_variance > 1000:  # Threshold mínimo
+        return best_angle
+    
+    return None
+
+
+def _deskew_connected_components(image: np.ndarray) -> float | None:
+    """
+    Detecta ângulo de inclinação usando análise de componentes conectados.
+    
+    Analisa a orientação dos componentes de texto para determinar a inclinação.
+    
+    Args:
+        image: Imagem em escala de cinza
+        
+    Returns:
+        Ângulo detectado em graus ou None se não detectado
+    """
+    h, w = image.shape
+    
+    # Binarizar
+    _, binary = cv2.threshold(image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # Encontrar componentes conectados
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    
+    if num_labels < 2:
+        return None
+    
+    # Filtrar componentes pequenos (ruído)
+    min_area = (h * w) * 0.0001  # 0.01% da imagem
+    angles = []
+    weights = []
+    
+    for i in range(1, num_labels):  # Pular background (label 0)
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < min_area:
+            continue
+        
+        # Extrair componente
+        component_mask = (labels == i).astype(np.uint8) * 255
+        
+        # Encontrar contornos
+        contours, _ = cv2.findContours(component_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+        
+        # Usar maior contorno
+        largest_contour = max(contours, key=cv2.contourArea)
+        
+        # Ajustar retângulo rotacionado
+        if len(largest_contour) < 5:
+            continue
+        
+        rect = cv2.minAreaRect(largest_contour)
+        angle = rect[2]
+        
+        # Normalizar ângulo para -45 a 45 graus
+        if angle < -45:
+            angle += 90
+        elif angle > 45:
+            angle -= 90
+        
+        # Filtrar ângulos muito inclinados
+        if abs(angle) > 30:
+            continue
+        
+        angles.append(angle)
+        weights.append(area)
+    
+    if not angles:
+        return None
+    
+    # Média ponderada
+    angles_array = np.array(angles)
+    weights_array = np.array(weights)
+    
+    if weights_array.sum() > 0:
+        weights_array = weights_array / weights_array.sum()
+        return float(np.average(angles_array, weights=weights_array))
+    
+    return float(np.median(angles_array))
+
+
+def deskew_image(image: np.ndarray, threshold: float = 0.1) -> tuple[np.ndarray, float]:
+    """
+    Corrige rotação da imagem (deskew) usando múltiplas estratégias.
+
+    Usa três métodos diferentes e combina os resultados:
+    1. HoughLinesP: Detecta linhas horizontais
+    2. Projection Profile: Maximiza variância do perfil de projeção
+    3. Componentes Conectados: Analisa orientação de componentes de texto
+
+    Args:
+        image: Imagem em escala de cinza ou colorida
+        threshold: Graus mínimos para aplicar correção (padrão: 0.1)
+
+    Returns:
+        Tupla (imagem corrigida, ângulo detectado)
+    """
+    validate_image(image)
+    gray = image_to_grayscale(image) if len(image.shape) == 3 else image
+    h, w = gray.shape
+
+    # Tentar múltiplas estratégias
+    angles = []
+    weights = []
+    
+    # 1. HoughLinesP (peso alto - mais confiável)
+    hough_angle = _deskew_hough_lines(gray)
+    if hough_angle is not None:
+        angles.append(hough_angle)
+        weights.append(3.0)  # Peso maior
+    
+    # 2. Projection Profile (peso médio)
+    proj_angle = _deskew_projection_profile(gray)
+    if proj_angle is not None:
+        angles.append(proj_angle)
+        weights.append(2.0)
+    
+    # 3. Componentes Conectados (peso baixo - pode ser ruidoso)
+    cc_angle = _deskew_connected_components(gray)
+    if cc_angle is not None:
+        angles.append(cc_angle)
+        weights.append(1.0)
+    
+    if not angles:
+        return image, 0.0
+    
+    # Calcular ângulo final usando média ponderada
+    angles_array = np.array(angles)
+    weights_array = np.array(weights)
+    
+    if weights_array.sum() > 0:
+        weights_array = weights_array / weights_array.sum()
+        final_angle = float(np.average(angles_array, weights=weights_array))
     else:
-        final_angle = weighted_angle
-
-    # 8. Só corrige se exceder threshold
-    if abs(final_angle) < threshold:
+        final_angle = float(np.median(angles_array))
+    
+    # Validar ângulo (não deve ser muito extremo)
+    if abs(final_angle) > 7.0:  # Limite máximo de 7 graus
+        # Se o ângulo for muito grande, provavelmente é um erro de detecção
         return image, final_angle
+    
+    # Só corrige se exceder threshold (reduzido para detectar 0.56°)
+    # Threshold mínimo de 0.3 graus para capturar inclinações pequenas
+    min_threshold = min(threshold, 0.3)
+    if abs(final_angle) < min_threshold:
+        return image, final_angle
+    
+    # Permite correção até 7 graus para corrigir inclinações maiores
+    if abs(final_angle) > 7.0:  # Limita a máximo 7 graus
+        final_angle = np.sign(final_angle) * min(7.0, abs(final_angle))
 
-    # 9. Aplica rotação com interpolação de alta qualidade
+    # Aplica rotação com interpolação de alta qualidade
     center = (w // 2, h // 2)
     rotation_matrix = cv2.getRotationMatrix2D(center, final_angle, 1.0)
     

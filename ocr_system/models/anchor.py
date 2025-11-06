@@ -14,6 +14,21 @@ class QRCodeAnchorConfig(BaseModel):
     search_region: tuple[int, int, int, int] | None = Field(
         default=None, description="Região de busca opcional (x, y, width, height)"
     )
+    expected_qr_size: tuple[int, int] | None = Field(
+        default=None, description="Tamanho esperado do QR code (width, height) para cálculo de escala dos ROIs"
+    )
+    expected_qr_width_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Proporção esperada do QR code em relação à largura da imagem (0.0-1.0)"
+    )
+    expected_qr_height_ratio: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Proporção esperada do QR code em relação à altura da imagem (0.0-1.0)"
+    )
     min_confidence: float = Field(default=0.8, ge=0.0, le=1.0)
 
     @field_validator("search_region")
@@ -23,6 +38,15 @@ class QRCodeAnchorConfig(BaseModel):
             x, y, w, h = v
             if x < 0 or y < 0 or w <= 0 or h <= 0:
                 raise ValueError("search_region deve ter valores positivos e width/height > 0")
+        return v
+
+    @field_validator("expected_qr_size")
+    @classmethod
+    def validate_expected_qr_size(cls, v: tuple[int, int] | None) -> tuple[int, int] | None:
+        if v is not None:
+            w, h = v
+            if w <= 0 or h <= 0:
+                raise ValueError("expected_qr_size deve ter width e height > 0")
         return v
 
 
