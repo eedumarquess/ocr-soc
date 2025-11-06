@@ -12,6 +12,9 @@ class PreprocessingConfig(BaseModel):
 
     deskew: bool = Field(default=True, description="Aplicar correção de rotação")
     deskew_threshold: float = Field(default=0.1, description="Graus mínimos para corrigir")
+    deskew_text_dominant: bool = Field(
+        default=True, description="Usar deskew baseado em texto dominante (ignora linhas de tabela)"
+    )
     binarization: Literal["otsu", "adaptive", "none"] = Field(
         default="adaptive", description="Tipo de binarização"
     )
@@ -24,6 +27,12 @@ class PreprocessingConfig(BaseModel):
     clahe_clip_limit: float = Field(default=1.2, ge=0.1, le=10.0, description="Limite de clip para CLAHE")
     border_removal: bool = Field(default=True, description="Remover bordas pretas")
     border_threshold: int = Field(default=10, ge=1, description="Threshold de pixels de borda preta")
+    remove_ghost_lines: bool = Field(
+        default=True, description="Remover linhas fantasma/bordas de scanner antes do deskew"
+    )
+    ghost_line_border_percent: float = Field(
+        default=0.1, ge=0.05, le=0.2, description="Percentual das bordas para detectar linhas fantasma (0.1 = 10%)"
+    )
     resize_to_reference: bool = Field(default=False, description="Redimensionar para DPI de referência")
     reference_dpi: int = Field(default=300, ge=72, description="DPI de referência")
 
